@@ -1226,22 +1226,28 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                     }
 
                     boolean moveSuccess = false;
-                    boolean isSourceOnSd = StorageUtils.isFileOnSdCard(context, sourceFile);
 
-                    if (isSourceOnSd) {
-                        // Cross-volume: copy then delete
-                        if (copyFile(sourceFile, destFile)) {
+                    // First, try a simple rename. This is fast and will work for same-volume moves.
+                    if (sourceFile.renameTo(destFile)) {
+                        moveSuccess = true;
+                    } else {
+                        // If rename fails, it's likely a cross-volume move. Fall back to copy-then-delete.
+                        Log.w(TAG, "renameTo failed for " + sourceFile.getAbsolutePath() + ". Falling back to copy-delete.");
+                        if (StorageUtils.copyFile(context, sourceFile, destFile)) {
+                            // Copy was successful, now delete the original.
                             if (StorageUtils.deleteFile(context, sourceFile)) {
                                 moveSuccess = true;
                             } else {
-                                // Cleanup failed copy
+                                // CRITICAL: If the original can't be deleted, we must delete the copy
+                                // to avoid duplicating the file.
+                                Log.e(TAG, "Failed to delete original file " + sourceFile.getAbsolutePath() + " after copy. Deleting copied file to prevent duplication.");
                                 destFile.delete();
+                                moveSuccess = false;
                             }
-                        }
-                    } else {
-                        // Same-volume: rename
-                        if (sourceFile.renameTo(destFile)) {
-                            moveSuccess = true;
+                        } else {
+                            // The copy operation failed.
+                            Log.e(TAG, "Copy-delete fallback failed to copy file: " + sourceFile.getAbsolutePath());
+                            moveSuccess = false;
                         }
                     }
 
@@ -1279,32 +1285,6 @@ public class StorageBrowserActivity extends Activity implements StorageBrowserAd
                 masterList.removeAll(itemsToRemove);
                 // This is a simplified refresh, a more complex one could remove empty date headers
                 adapter.updateMasterList(masterList);
-            }
-        }
-
-        private boolean copyFile(File source, File destination) {
-            InputStream in = null;
-            OutputStream out = null;
-            try {
-                in = new FileInputStream(source); // This might fail for SD card without SAF
-                out = new FileOutputStream(destination);
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = in.read(buf)) > 0) {
-                    out.write(buf, 0, len);
-                }
-                return true;
-            } catch (IOException e) {
-                Log.e(TAG, "File copy failed", e);
-                // Attempt with SAF
-                return StorageUtils.copyFile(context, source, destination);
-            } finally {
-                try {
-                    if (in != null) in.close();
-                    if (out != null) out.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
             }
         }
 
