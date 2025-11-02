@@ -49,6 +49,11 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.Serializable;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -711,45 +716,7 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 
 
     private void moveToRecycleBin(List<SearchResult> resultsToMove) {
-        File recycleBinDir = new File(Environment.getExternalStorageDirectory(), "HFMRecycleBin");
-        if (!recycleBinDir.exists()) {
-            if (!recycleBinDir.mkdir()) {
-                Toast.makeText(this, "Failed to create Recycle Bin folder.", Toast.LENGTH_SHORT).show();
-                return;
-            }
-        }
-
-        int movedCount = 0;
-        for (SearchResult result : resultsToMove) {
-            if (result.getPath() != null) {
-                File sourceFile = new File(result.getPath());
-                if (sourceFile.exists()) {
-                    File destFile = new File(recycleBinDir, sourceFile.getName());
-
-                    if (destFile.exists()) {
-                        String name = sourceFile.getName();
-                        String extension = "";
-                        int dotIndex = name.lastIndexOf(".");
-                        if (dotIndex > 0) {
-                            extension = name.substring(dotIndex);
-                            name = name.substring(0, dotIndex);
-                        }
-                        destFile = new File(recycleBinDir, name + "_" + System.currentTimeMillis() + extension);
-                    }
-
-                    if (sourceFile.renameTo(destFile)) {
-                        movedCount++;
-                        sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(sourceFile)));
-                        sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(destFile)));
-                    } else {
-                        Log.w(TAG, "Failed to move file to recycle bin: " + sourceFile.getAbsolutePath());
-                    }
-                }
-            }
-        }
-
-        Toast.makeText(this, movedCount + " file(s) moved to Recycle Bin.", Toast.LENGTH_LONG).show();
-        executeQuery(searchInput.getText().toString());
+        new MoveToRecycleTask(resultsToMove).execute();
     }
 
     private List<SearchResult> findSiblingFiles(SearchResult originalResult) {
@@ -1287,5 +1254,138 @@ public class SearchActivity extends Activity implements SearchAdapter.OnItemClic
 			});
 
         dialog.show();
+    }
+
+    private class MoveToRecycleTask extends AsyncTask<Void, Void, List<SearchResult>> {
+        private AlertDialog progressDialog;
+        private List<SearchResult> resultsToMove;
+        private Context context;
+
+        public MoveToRecycleTask(List<SearchResult> resultsToMove) {
+            this.resultsToMove = resultsToMove;
+            this.context = SearchActivity.this;
+        }
+
+        @Override
+        protected void onPreExecute() {
+            AlertDialog.Builder builder = new AlertDialog.Builder(context);
+            View dialogView = LayoutInflater.from(context).inflate(R.layout.dialog_progress_simple, null);
+            TextView progressText = dialogView.findViewById(R.id.progress_text);
+            progressText.setText("Moving files to Recycle Bin...");
+            builder.setView(dialogView);
+            builder.setCancelable(false);
+            progressDialog = builder.create();
+            progressDialog.show();
+        }
+
+        @Override
+        protected List<SearchResult> doInBackground(Void... voids) {
+            File recycleBinDir = new File(Environment.getExternalStorageDirectory(), "HFMRecycleBin");
+            if (!recycleBinDir.exists()) {
+                if (!recycleBinDir.mkdir()) {
+                    return new ArrayList<>();
+                }
+            }
+
+            List<SearchResult> movedResults = new ArrayList<>();
+            for (SearchResult result : resultsToMove) {
+                if (result.getPath() == null) continue;
+
+                File sourceFile = new File(result.getPath());
+                if (sourceFile.exists()) {
+                    File destFile = new File(recycleBinDir, sourceFile.getName());
+
+                    if (destFile.exists()) {
+                        String name = sourceFile.getName();
+                        String extension = "";
+                        int dotIndex = name.lastIndexOf(".");
+                        if (dotIndex > 0) {
+                            extension = name.substring(dotIndex);
+                            name = name.substring(0, dotIndex);
+                        }
+                        destFile = new File(recycleBinDir, name + "_" + System.currentTimeMillis() + extension);
+                    }
+
+                    boolean moveSuccess = false;
+                    boolean isSourceOnSd = StorageUtils.isFileOnSdCard(context, sourceFile);
+
+                    if (isSourceOnSd) {
+                        if (copyFile(sourceFile, destFile)) {
+                            if (StorageUtils.deleteFile(context, sourceFile)) {
+                                moveSuccess = true;
+                            } else {
+                                destFile.delete();
+                            }
+                        }
+                    } else {
+                        if (sourceFile.renameTo(destFile)) {
+                            moveSuccess = true;
+                        }
+                    }
+
+                    if (moveSuccess) {
+                        movedResults.add(result);
+                        sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(sourceFile)));
+                        sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(destFile)));
+                    } else {
+                        Log.w(TAG, "Failed to move file to recycle bin: " + sourceFile.getAbsolutePath());
+                    }
+                }
+            }
+            return movedResults;
+        }
+
+        @Override
+        protected void onPostExecute(List<SearchResult> movedResults) {
+            progressDialog.dismiss();
+
+            if (movedResults.isEmpty() && !resultsToMove.isEmpty()) {
+                Toast.makeText(context, "Failed to move some or all files.", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(context, movedResults.size() + " file(s) moved to Recycle Bin.", Toast.LENGTH_LONG).show();
+            }
+
+            if (!movedResults.isEmpty()) {
+                displayList.removeAll(movedResults);
+
+                List<Object> itemsToRemove = new ArrayList<>();
+                for (int i = 0; i < displayList.size(); i++) {
+                    Object currentItem = displayList.get(i);
+                    if (currentItem instanceof DateHeader) {
+                        if (i + 1 >= displayList.size() || displayList.get(i + 1) instanceof DateHeader) {
+                            itemsToRemove.add(currentItem);
+                        }
+                    }
+                }
+                displayList.removeAll(itemsToRemove);
+
+                adapter.notifyDataSetChanged();
+            }
+        }
+
+        private boolean copyFile(File source, File destination) {
+            InputStream in = null;
+            OutputStream out = null;
+            try {
+                in = new FileInputStream(source);
+                out = new FileOutputStream(destination);
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = in.read(buf)) > 0) {
+                    out.write(buf, 0, len);
+                }
+                return true;
+            } catch (IOException e) {
+                Log.e(TAG, "Standard file copy failed, attempting with StorageUtils", e);
+                return StorageUtils.copyFile(context, source, destination);
+            } finally {
+                try {
+                    if (in != null) in.close();
+                    if (out != null) out.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
     }
 }
