@@ -21,9 +21,8 @@ jobs:
       - name: Build with Gradle
         uses: gradle/gradle-build-action@v2
         with:
-          # --- THIS IS THE FINAL FIX ---
-          # The Android Gradle Plugin 7.4.2 requires Gradle version 7.5 or higher.
-          gradle-version: '7.5'
+          # Your project's Android Gradle Plugin requires Gradle version 8.0 or higher.
+          gradle-version: '8.0'
 
           # This is to prevent a potential cache error.
           cache-disabled: true
